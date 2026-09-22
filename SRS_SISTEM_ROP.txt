@@ -1,0 +1,189 @@
+================================================================================
+DOKUMEN SPESIFIKASI KEBUTUHAN PERANGKAT LUNAK (SOFTWARE REQUIREMENTS SPECIFICATION)
+================================================================================
+Judul Sistem : Sistem Informasi Manajemen Inventaris & Reorder Point (RoP)
+               Berbasis Machine Learning & Dynamic Safety Stock
+Versi        : 1.0.0
+Tanggal      : 22 September 2026
+Teknologi    : PHP 8.x, Laravel Framework, MySQL / MariaDB, Blade, Bootstrap/Tailwind CSS
+Pengembang   : Tim Pengembang Sistem RoP
+================================================================================
+
+1. PENDAHULUAN
+--------------
+1.1 Tujuan Dokumen
+Dokumen Spesifikasi Kebutuhan Perangkat Lunak (SRS) ini bertujuan untuk mendefinisikan
+seluruh kebutuhan fungsional dan non-fungsional dari sistem manajemen stok dan
+pengadaan barang cerdas (RoP System). Dokumen ini menjadi acuan utama bagi tim pengembang,
+manajemen, penguji (QA), serta pengguna akhir (stakeholders).
+
+1.2 Ruang Lingkup Sistem
+Sistem ini mengelola siklus persediaan barang dari penerimaan barang, pengeluaran barang,
+pemantauan stok aman (Safety Stock), penentuan titik pemesanan ulang (Reorder Point - RoP),
+pemesanan pembelian (Purchase Order), hingga peramalan berbasis analitik permintaan
+(Coefficient of Variation / ML Inventory Engine) serta mekanisme manual override.
+
+1.3 Definisi, Akronim, dan Singkatan
+- RoP (Reorder Point): Titik batas jumlah stok saat pesanan baru harus dilakukan.
+- SS (Safety Stock): Stok pengaman untuk mencegah terjadinya stock-out.
+- CV (Coefficient of Variation): Ukuran dispersi permintaan historis untuk menentukan
+  klasifikasi pola permintaan (Regular vs Intermittent).
+- LTD (Lead Time Demand): Kebutuhan konsumsi barang selama masa tunggu pengiriman.
+- IP (Inventory Position): Total stok fisik + pesanan berjalan - stok dicadangkan
+  (Stock on Hand + Stock on Order - Stock Reserved).
+- PO (Purchase Order): Surat pesanan resmi pengadaan barang kepada pemasok (Supplier).
+- RBAC (Role-Based Access Control): Kontrol akses pengguna berbasis peran.
+
+--------------------------------------------------------------------------------
+2. DESKRIPSI UMUM SISTEM
+--------------------------------------------------------------------------------
+2.1 Perspektif Produk
+Sistem RoP adalah aplikasi berbasis web yang berfungsi sebagai pusat kendali persediaan
+dan pengadaan barang (procurement) multi-departemen untuk menghindari overstock maupun
+out-of-stock secara otomatis dan presisi.
+
+2.2 Karakteristik Pengguna & Peran (User Roles)
+Sistem memiliki 3 (tiga) peran utama pengguna:
+a. Petugas Gudang (Role: 'gudang'):
+   - Mencatat transaksi stok masuk (Stock In) dan keluar (Stock Out).
+   - Mengelola master data barang (Item), kategori (Category), dan pemasok (Supplier).
+   - Mengimpor data barang (Excel/CSV).
+   - Menghitung ulang parameter RoP/SS secara manual bila diperlukan.
+b. Procurement / Pembelian (Role: 'procurement'):
+   - Memonitor daftar barang yang membutuhkan pemesanan ulang (Reorder List).
+   - Mengelola Purchase Order (pembuatan, monitoring status, penerimaan barang, pembatalan).
+   - Melakukan penyesuaian parameter khusus (Manual Override) pada RoP & SS disertai alasan audit.
+   - Mengakses laporan stok dan riwayat transaksi (Export Excel/CSV).
+c. Administrator IT (Role: 'it'):
+   - Mengelola akun pengguna (User Management: Create, Update, Toggle Active/Nonaktif).
+   - Memantau log operasional dan integritas sistem.
+   - Mengontrol konfigurasi aplikasi.
+
+2.3 Lingkungan Operasi
+- Web Server  : Apache / Nginx (Laragon / Linux Server)
+- Runtime     : PHP >= 8.1
+- Database    : MySQL 5.7+ / 8.0+ / MariaDB 10.3+
+- Browser     : Google Chrome, Mozilla Firefox, Microsoft Edge, Safari (versi modern)
+
+--------------------------------------------------------------------------------
+3. FORMULA & ALGORITMA SISTEM (ML INVENTORY ENGINE)
+--------------------------------------------------------------------------------
+Sistem menerapkan kalkulasi dinamis berbasis riwayat transaksi bulanan:
+
+3.1 Perhitungan Penggunaan Rata-rata:
+    AvgUsage = Total Penggunaan 12 Bulan Terakhir / 12
+    RecentUsage = Total Penggunaan 3 Bulan Terakhir / 3
+
+3.2 Klasifikasi Pola Permintaan:
+    CV (Coefficient of Variation) = Standar Deviasi Penggunaan / AvgUsage
+    - Jika CV > 0.5  => Pola Permintaan 'Intermittent' (Fluktuatif/Musiman)
+      PlanningUsage   = MAX(AvgUsage, RecentUsage)
+    - Jika CV <= 0.5 => Pola Permintaan 'Regular' (Stabil)
+      PlanningUsage   = AvgUsage
+
+3.3 Safety Stock (SS) & Reorder Point (RoP):
+    LeadTime (Bulan) = lead_time_days / 30
+    SS               = MAX(0, (MaxMonthlyUsage - AvgUsage) * LeadTime)
+    LTD              = PlanningUsage * LeadTime
+    RoP              = LTD + SS
+    MaxStock         = (PlanningUsage * CoveragePeriod) + SS
+
+3.4 Hierarki Parameter:
+    Nilai RoP dan SS mengikuti aturan prioritas:
+    Priority 1 : Manual Override (jika aktif & diisi oleh Procurement/Gudang)
+    Priority 2 : Algoritma ML / Dynamic Engine
+    Priority 3 : Nilai Default (Fallback)
+
+--------------------------------------------------------------------------------
+4. KEBUTUHAN FUNGSIONAL (FUNCTIONAL REQUIREMENTS)
+--------------------------------------------------------------------------------
+[FR-01] Modul Autentikasi & Otorisasi
+- FR-01.1: Pengguna dapat melakukan Login dengan kredensial aman (Email & Password).
+- FR-01.2: Sistem memverifikasi status keaktifan user (is_active). User nonaktif ditolak.
+- FR-01.3: Sistem membatasi hak akses halaman berdasarkan peran (Middleware RBAC).
+- FR-01.4: Pengguna dapat melakukan Logout untuk mengakhiri sesi.
+
+[FR-02] Modul Dashboard Berdasarkan Peran
+- FR-02.1: Dashboard Gudang menampilkan status stok kritis, barang habis, transaksi hari ini,
+           dan notifikasi sistem.
+- FR-02.2: Dashboard Procurement menampilkan statistik PO pending, tren pemakaian 6 bulan,
+           top 10 barang paling sering digunakan, dan tabel rekomendasi barang yang harus di-order.
+- FR-02.3: Dashboard IT menampilkan jumlah pengguna, status user aktif/nonaktif, sebaran role,
+           dan ringkasan sistem.
+
+[FR-03] Modul Manajemen Master Barang (Items)
+- FR-03.1: CRUD data barang (Kode, Nama, Satuan, Kategori, Pemasok, Lead Time, Periode Coverage).
+- FR-03.2: Fitur Import data barang massal via file Excel/CSV.
+- FR-03.3: Fitur Recalculate untuk memicu perhitungan ulang parameter stok secara instan.
+- FR-03.4: Fitur Manual Override pada RoP dan Safety Stock beserta pencatatan user dan alasan audit.
+- FR-03.5: Fitur Reset Override untuk mengembalikan parameter ke perhitungan otomatis mesin.
+
+[FR-04] Modul Manajemen Transaksi Persediaan (Stock Transactions)
+- FR-04.1: Pencatatan Transaksi Masuk (Stock In), Keluar (Stock Out), dan Penyesuaian (Adjustment).
+- FR-04.2: Pembaruan otomatis nilai Stock on Hand dan agregat pemakaian bulanan (Monthly Usage).
+- FR-04.3: Validasi transaksi agar tidak terjadi stok negatif pada pengeluaran barang.
+- FR-04.4: Setiap transaksi memicu kalkulasi ulang RoP/SS melalui ML Inventory Engine.
+
+[FR-05] Modul Pengadaan Barang (Purchase Orders)
+- FR-05.1: Pembuatan PO dengan penomoran unik, pemilihan supplier, dan estimasi tanggal tiba.
+- FR-05.2: Monitoring status PO: 'pending', 'partial', 'received', 'cancelled'.
+- FR-05.3: Penerimaan barang dari PO (Receive) yang otomatis menambah stok fisik (Stock on Hand)
+           dan mengurangi kuantitas pesanan berjalan (Stock on Order).
+- FR-05.4: Pembatalan PO (Cancel) yang otomatis mengoreksi nilai Stock on Order.
+
+[FR-06] Modul Notifikasi Cerdas
+- FR-06.1: Notifikasi otomatis ketika barang mencapai status 'low', 'critical', atau 'out_of_stock'.
+- FR-06.2: Notifikasi pengingat jatuh tempo PO kepada divisi Procurement.
+- FR-06.3: Fitur tandai baca (Mark as Read) dan bersihkan notifikasi.
+
+[FR-07] Modul Laporan & Ekspor Data
+- FR-07.1: Filter dan visualisasi data pergerakan barang.
+- FR-07.2: Ekspor data posisi persediaan barang (Stock Report) ke format Spreadsheet.
+- FR-07.3: Ekspor riwayat transaksi stok berdasarkan rentang tanggal tertentu.
+
+[FR-08] Modul Manajemen Pengguna (IT Administrator)
+- FR-08.1: IT Admin dapat menambah, mengedit data user, dan mengatur role akses.
+- FR-08.2: IT Admin dapat mengaktifkan / menonaktifkan akun user (Toggle Active).
+
+--------------------------------------------------------------------------------
+5. KEBUTUHAN NON-FUNGSIONAL (NON-FUNCTIONAL REQUIREMENTS)
+--------------------------------------------------------------------------------
+5.1 Performa & Skalabilitas (Performance)
+- Waktu respons pemrosesan kalkulasi RoP tidak boleh melebihi 2 detik untuk 1.000 item.
+- Operasi query database dioptimalkan dengan indexing pada foreign key dan kolom status.
+
+5.2 Keamanan (Security)
+- Proteksi terhadap serangan CSRF pada setiap form mutasi data.
+- Password pengguna dienkripsi menggunakan hashing Bcrypt / Argon2.
+- Proteksi SQL Injection melalui Eloquent ORM & Query Builder parameterized queries.
+- Sanitasi input data pada proses import file.
+
+5.3 Ketersediaan & Keandalan (Reliability & Availability)
+- Sistem dirancang untuk mendukung operasional multi-user secara konkuren.
+- Mekanisme transaksi database (DB Transaction) diterapkan pada pencatatan PO & transaksi stok
+  guna mencegah inkonsistensi data jika terjadi kegagalan proses.
+
+5.4 Usabilitas (Usability)
+- Antarmuka web responsif dan adaptif di berbagai resolusi layar.
+- Indikator warna visual intuitif pada status stok (Merah: Out of Stock/Critical, Kuning: Low, Hijau: Normal).
+
+--------------------------------------------------------------------------------
+6. STRUKTUR DATABASE (SKEMA ENTITAS UTAMA)
+--------------------------------------------------------------------------------
+1. users             : id, name, email, password, role (gudang/procurement/it), is_active, timestamps
+2. categories        : id, name, code, description, timestamps
+3. suppliers         : id, name, code, contact_person, phone, email, address, lead_time_days, timestamps
+4. items             : id, category_id, supplier_id, code, name, unit, stock_on_hand, stock_on_order,
+                       stock_reserved, lead_time_days, coverage_period, safety_stock, rop, max_stock,
+                       avg_usage, planning_usage, cv_value, demand_type, ml_safety_stock, ml_rop,
+                       is_manual_override, manual_safety_stock, manual_rop, override_reason, timestamps
+5. stock_transactions: id, item_id, user_id, transaction_type (in/out/adjustment), quantity,
+                       reference_number, notes, transaction_date, timestamps
+6. monthly_usages    : id, item_id, year, month, total_out, total_in, timestamps
+7. purchase_orders   : id, po_number, supplier_id, item_id, quantity, quantity_received, status,
+                       order_date, expected_delivery_date, notes, created_by, timestamps
+8. notifications     : id, user_id, role_target, title, message, type, is_read, item_id, timestamps
+
+================================================================================
+AKHIR DOKUMEN SPESIFIKASI KEBUTUHAN PERANGKAT LUNAK (SRS)
+================================================================================
