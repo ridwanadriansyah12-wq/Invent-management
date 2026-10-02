@@ -24,10 +24,21 @@ class RoleMiddleware
             return redirect()->route('login')->with('error', 'Akun Anda telah dinonaktifkan.');
         }
 
-        if (!in_array($user->role, $roles)) {
-            abort(403, 'Anda tidak memiliki akses ke halaman ini.');
+        // Map legacy role names to new RBAC roles
+        $normalizedRoles = array_map(function ($r) {
+            return match($r) {
+                'it'          => 'admin',
+                'procurement' => 'approver',
+                'gudang'      => 'staff',
+                default       => $r,
+            };
+        }, $roles);
+
+        // Admin has super-user access to all roles
+        if ($user->role === 'admin' || in_array($user->role, $normalizedRoles, true)) {
+            return $next($request);
         }
 
-        return $next($request);
+        abort(403, 'Akses ditolak: Anda tidak memiliki izin untuk melakukan tindakan ini.');
     }
 }

@@ -1,0 +1,27 @@
+<?php
+
+return [
+    'app_name'          => 'PRISM Stock',
+    'app_subname'       => 'Predictive Reorder & Inventory Safety Management',
+    'system_tagline'    => 'Sistem Manajemen Persediaan Terpadu Berbasis Machine Learning',
+    'logged_in_as'      => 'Masuk sebagai',
+    'role'              => 'Peran',
+    'actions'           => 'Aksi',
+    'save'              => 'Simpan',
+    'cancel'            => 'Batal',
+    'close'             => 'Tutup',
+    'delete'            => 'Hapus',
+    'edit'              => 'Ubah',
+    'view'              => 'Lihat',
+    'confirm'           => 'Konfirmasi',
+    'filter'            => 'Filter',
+    'reset'             => 'Reset',
+    'search'            => 'Cari...',
+    'loading'           => 'Memuat data...',
+    'no_data'           => 'Tidak ada data yang ditemukan',
+    'all'               => 'Semua',
+    'success'           => 'Berhasil',
+    'error'             => 'Terjadi kesalahan',
+    'warning'           => 'Peringatan',
+    'info'              => 'Informasi',
+];

@@ -1,595 +1,344 @@
-@extends('layouts.app')
-@section('title', 'Monitoring Inventaris & Dynamic ROP')
+@extends('layouts.app', ['title' => 'Master SKU', 'header' => 'Master SKU & Parameter Inventaris'])
 
 @section('content')
-<div class="page-header d-flex align-center justify-between" style="flex-wrap:wrap;gap:12px;">
-  <div>
-    <h1 class="page-title">Monitoring Inventaris & Dynamic ROP</h1>
-    <p class="page-sub">Pantau ambang batas pemesanan ulang secara realtime & intervensi parameter Machine Learning</p>
-  </div>
-  <div class="d-flex gap-2">
-    @if(auth()->user()->isGudang())
-    <button type="button" class="btn btn-secondary" onclick="document.getElementById('importModal').style.display='flex'">
-      <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-      Import Excel
-    </button>
-    <a href="{{ route('items.create') }}" class="btn btn-primary">
-      <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-      Tambah Barang
-    </a>
-    @endif
-  </div>
-</div>
+<div class="space-y-5">
 
-{{-- Quick Filter Pills (High-Level Status Metrics) --}}
-<div class="quick-filter-pills">
-  <a href="{{ route('items.index') }}" 
-     class="filter-pill {{ !request()->hasAny(['reorder_only', 'status', 'override_mode']) ? 'active' : '' }}">
-    <span>Semua Barang</span>
-    <span class="pill-counter">{{ $stats['total'] }}</span>
-  </a>
-
-  <a href="{{ route('items.index', array_merge(request()->except(['page']), ['reorder_only' => request('reorder_only') ? null : '1'])) }}" 
-     class="filter-pill {{ request('reorder_only') ? 'active-danger' : '' }}">
-    <span>🚨 Butuh Reorder (Stok &le; ROP)</span>
-    <span class="pill-counter" style="{{ request('reorder_only') ? 'background:rgba(239,68,68,0.3);color:#fff;' : '' }}">{{ $stats['reorder_needed'] }}</span>
-  </a>
-
-  <a href="{{ route('items.index', array_merge(request()->except(['page']), ['status' => request('status') === 'critical' ? null : 'critical'])) }}" 
-     class="filter-pill {{ request('status') === 'critical' ? 'active-warning' : '' }}">
-    <span>⚠️ Stok Kritis (&le; SS)</span>
-    <span class="pill-counter">{{ $stats['critical'] }}</span>
-  </a>
-
-  <a href="{{ route('items.index', array_merge(request()->except(['page']), ['override_mode' => request('override_mode') === 'manual' ? null : 'manual'])) }}" 
-     class="filter-pill {{ request('override_mode') === 'manual' ? 'active-warning' : '' }}">
-    <span>👤 Manual Override</span>
-    <span class="pill-counter">{{ $stats['overridden'] }}</span>
-  </a>
-</div>
-
-{{-- Search & Filter Bar --}}
-<form method="GET" action="{{ route('items.index') }}" class="filter-bar mb-4" id="filterForm">
-  @if(request('reorder_only'))
-    <input type="hidden" name="reorder_only" value="1">
-  @endif
-
-  <div class="input-group flex-1" style="min-width:240px;max-width:320px;">
-    <svg class="input-group-icon" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-    </svg>
-    <input type="text" name="search" id="searchInput" class="form-control" 
-           placeholder="Cari SKU / nama barang..." value="{{ request('search') }}" autocomplete="off">
-  </div>
-
-  <select name="category_id" class="form-control" style="max-width:180px;" onchange="this.form.submit()">
-    <option value="">Semua Kategori</option>
-    @foreach($categories as $cat)
-      <option value="{{ $cat->id }}" {{ request('category_id') == $cat->id ? 'selected' : '' }}>{{ $cat->name }}</option>
-    @endforeach
-  </select>
-
-  <select name="status" class="form-control" style="max-width:160px;" onchange="this.form.submit()">
-    <option value="">Semua Status Stok</option>
-    <option value="normal"   {{ request('status') == 'normal'   ? 'selected' : '' }}>Normal (Aman)</option>
-    <option value="low"      {{ request('status') == 'low'      ? 'selected' : '' }}>Low Stock (Menipis)</option>
-    <option value="critical" {{ request('status') == 'critical' ? 'selected' : '' }}>Kritis (&le; SS)</option>
-    <option value="out"      {{ request('status') == 'out'      ? 'selected' : '' }}>Habis (0)</option>
-  </select>
-
-  <select name="override_mode" class="form-control" style="max-width:170px;" onchange="this.form.submit()">
-    <option value="">Semua Parameter</option>
-    <option value="ml"     {{ request('override_mode') == 'ml'     ? 'selected' : '' }}>🤖 Model ML</option>
-    <option value="manual" {{ request('override_mode') == 'manual' ? 'selected' : '' }}>👤 Manual Override</option>
-  </select>
-
-  @if(request()->hasAny(['search', 'category_id', 'status', 'reorder_only', 'override_mode']))
-    <a href="{{ route('items.index') }}" class="btn btn-secondary">Reset Filter</a>
-  @endif
-</form>
-
-{{-- Inventory Monitor Data Table --}}
-<div class="card">
-  <div class="table-container">
-    <table>
-      <thead>
-        <tr>
-          <th style="width:110px;">Kode SKU</th>
-          <th style="min-width:200px;">Nama Barang</th>
-          <th style="width:130px;">Kategori</th>
-          <th style="width:120px;">Stok Fisik</th>
-          <th style="width:130px;">Dynamic ROP</th>
-          <th style="width:120px;">Safety Stock</th>
-          <th style="width:110px;">Status</th>
-          <th style="width:160px;text-align:right;">Aksi</th>
-        </tr>
-      </thead>
-      <tbody>
-        @forelse($items as $item)
-        @php
-          $status = $item->stock_status;
-          $isReorderAlert = ($item->rop > 0 && $item->stock_on_hand <= $item->rop);
-          $rowClass = $isReorderAlert ? 'row-reorder-alert' : '';
-        @endphp
-        <tr id="item-row-{{ $item->id }}" class="{{ $rowClass }}">
-          {{-- SKU --}}
-          <td>
-            <span class="item-code">{{ $item->code }}</span>
-          </td>
-
-          {{-- Name & Unit --}}
-          <td>
-            <a href="{{ route('items.show', $item) }}" style="font-weight:600;color:var(--text-primary);display:block;">
-              {{ $item->name }}
-            </a>
-            <div class="text-sm text-muted">Satuan: {{ $item->unit }}</div>
-          </td>
-
-          {{-- Category --}}
-          <td>
-            <span class="badge badge-white">{{ $item->category?->name ?? '-' }}</span>
-          </td>
-
-          {{-- Stock on Hand --}}
-          <td>
-            <div class="font-bold {{ $item->stock_on_hand <= 0 ? 'text-danger' : ($isReorderAlert ? 'text-warning' : '') }}" 
-                 style="font-size:14px;">
-              <span class="row-stock-val">{{ number_format($item->stock_on_hand, 0) }}</span> 
-              <span style="font-size:11px;font-weight:normal;color:var(--text-muted);">{{ $item->unit }}</span>
-            </div>
-            @if($item->max_stock > 0)
-              @php $pct = min(100, max(0, ($item->stock_on_hand / $item->max_stock) * 100)); @endphp
-              <div class="progress" style="margin-top:4px;width:70px;height:4px;" data-stock-progress="{{ $pct }}">
-                <div class="progress-bar" style="width:{{ $pct }}%"></div>
-              </div>
-            @endif
-          </td>
-
-          {{-- Dynamic ROP --}}
-          <td>
-            <div class="d-flex align-center gap-1">
-              <strong class="row-rop-val" style="font-size:13px;">{{ number_format($item->rop, 1) }}</strong>
-              <span class="text-muted" style="font-size:11px;">{{ $item->unit }}</span>
-            </div>
-            <div class="row-param-badge" style="margin-top:2px;">
-              @if($item->is_manual_override)
-                <span class="badge-param-override" title="Di-override secara manual">👤 Manual</span>
-              @else
-                <span class="badge-param-ml" title="Prediksi Machine Learning">🤖 ML</span>
-              @endif
-            </div>
-          </td>
-
-          {{-- Safety Stock --}}
-          <td>
-            <div class="row-ss-val" style="font-size:13px;font-weight:500;">
-              {{ number_format($item->safety_stock, 1) }} <span class="text-muted" style="font-size:11px;">{{ $item->unit }}</span>
-            </div>
-          </td>
-
-          {{-- Stock Status --}}
-          <td>
-            <div class="row-status-badge">
-              @if($isReorderAlert && $status !== 'out_of_stock')
-                <span class="badge badge-warning" style="display:inline-flex;align-items:center;gap:3px;">
-                  ⚠️ Butuh Order
-                </span>
-              @elseif($status === 'out_of_stock')
-                <span class="badge badge-danger">⛔ Habis</span>
-              @elseif($status === 'critical')
-                <span class="badge badge-danger">Kritis</span>
-              @else
-                <span class="badge badge-success">✓ Aman</span>
-              @endif
-            </div>
-          </td>
-
-          {{-- Actions --}}
-          <td style="text-align:right;">
-            <div class="d-flex justify-end gap-1">
-              {{-- Quick Manual Override Button --}}
-              <button type="button" class="btn btn-sm btn-secondary btn-quick-override"
-                      title="Quick Manual Override ROP & Safety Stock"
-                      data-id="{{ $item->id }}"
-                      data-code="{{ $item->code }}"
-                      data-name="{{ $item->name }}"
-                      data-unit="{{ $item->unit }}"
-                      data-stock="{{ $item->stock_on_hand }}"
-                      data-rop="{{ $item->rop }}"
-                      data-ss="{{ $item->safety_stock }}"
-                      data-ml-rop="{{ $item->ml_rop ?? $item->rop }}"
-                      data-ml-ss="{{ $item->ml_safety_stock ?? $item->safety_stock }}"
-                      data-is-override="{{ $item->is_manual_override ? '1' : '0' }}"
-                      data-reason="{{ $item->override_reason ?? '' }}"
-                      data-url-override="{{ route('items.override', $item) }}"
-                      data-url-reset="{{ route('items.reset-override', $item) }}">
-                <span style="font-size:13px;">🎛️</span> Override
-              </button>
-
-              <a href="{{ route('items.show', $item) }}" class="btn btn-sm btn-secondary" title="Lihat Detail Barang">
-                Detail
-              </a>
-
-              @if(auth()->user()->isGudang())
-              <a href="{{ route('items.edit', $item) }}" class="btn btn-sm btn-secondary" title="Edit Barang">
-                Edit
-              </a>
-              @endif
-            </div>
-          </td>
-        </tr>
-        @empty
-        <tr>
-          <td colspan="8" style="text-align:center;padding:48px 16px;">
-            <div class="empty-state">
-              <div class="empty-icon" style="font-size:32px;margin-bottom:8px;">📦</div>
-              <div class="empty-title" style="font-size:15px;font-weight:600;">Tidak ada barang yang cocok</div>
-              <div class="empty-desc" style="color:var(--text-muted);font-size:13px;margin-top:4px;">
-                Coba sesuaikan filter atau kata kunci pencarian Anda
-              </div>
-              <a href="{{ route('items.index') }}" class="btn btn-secondary btn-sm" style="margin-top:12px;">Reset Semua Filter</a>
-            </div>
-          </td>
-        </tr>
-        @endforelse
-      </tbody>
-    </table>
-  </div>
-
-  @if($items->hasPages())
-  <div style="padding:12px 16px;border-top:1px solid var(--border);">
-    {{ $items->links('vendor.pagination.simple-default') }}
-  </div>
-  @endif
-</div>
-
-{{-- ── QUICK MANUAL OVERRIDE MODAL (HUMAN-IN-THE-LOOP) ─────────────────────── --}}
-<div id="quickOverrideModal" class="modal-overlay" style="display:none;">
-  <div class="modal" style="max-width:520px;width:95%;">
-    <div class="modal-header d-flex justify-between align-center" style="padding-bottom:14px;border-bottom:1px solid var(--border);">
-      <div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span style="font-size:18px;">🎛️</span>
-          <h3 class="modal-title" style="margin:0;font-size:16px;">Quick Manual Override</h3>
+    <!-- ── Header Action Bar ─────────────────────────────────────────────── -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+            <h2 class="text-xl font-bold text-slate-900 dark:text-white tracking-tight">Daftar Master SKU</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Monitoring parameter Safety Stock (SS), Reorder Point (ROP), dan Max Stock (MAX) per SKU
+            </p>
         </div>
-        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0 26px;" id="modalItemSubtitle">
-          SKU: - · Nama Barang
-        </p>
-      </div>
-      <button type="button" id="closeOverrideModal" style="background:none;border:none;font-size:20px;color:var(--text-muted);cursor:pointer;">&times;</button>
+        <div class="flex items-center gap-2">
+            @can('manage-sku')
+                <a href="{{ route('items.create') }}"
+                   class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm shadow-emerald-950/30 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    <span>Tambah SKU Baru</span>
+                </a>
+            @endcan
+        </div>
     </div>
 
-    <form id="quickOverrideForm" method="POST">
-      @csrf
-      <div class="modal-body" style="padding:16px 0;">
-        
-        {{-- Switch: Toggle Manual Override --}}
-        <div style="background:var(--bg-surface);padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
-          <div>
-            <div style="font-weight:600;font-size:13px;color:var(--text-primary);">Aktifkan Override Manual</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
-              Jika aktif, nilai di bawah akan menggantikan prediksi ML
+    <!-- ── Filter & Pencarian Bar (Server-Side) ────────────────────────────── -->
+    <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm"
+         x-data="{ showAdvanced: {{ request()->hasAny(['category_id', 'warehouse_id', 'abc_class', 'xyz_class', 'demand_pattern', 'source', 'param_status']) ? 'true' : 'false' }} }">
+        <form method="GET" action="{{ route('items.index') }}" class="space-y-3">
+            <div class="flex flex-col md:flex-row items-stretch md:items-center gap-3">
+                <!-- Search Input -->
+                <div class="relative flex-1">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                    </div>
+                    <input type="text"
+                           name="search"
+                           value="{{ request('search') }}"
+                           placeholder="Cari berdasarkan SKU atau Nama barang..."
+                           class="w-full pl-9 pr-4 py-2 text-xs sm:text-sm rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+
+                <!-- Toggle: Di Bawah ROP Saja -->
+                <label class="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-rose-200 bg-rose-50/60 dark:bg-rose-950/20 text-rose-800 dark:text-rose-300 text-xs font-semibold cursor-pointer select-none shrink-0">
+                    <input type="checkbox"
+                           name="below_rop"
+                           value="1"
+                           {{ request()->boolean('below_rop') ? 'checked' : '' }}
+                           onchange="this.form.submit()"
+                           class="rounded text-rose-600 focus:ring-rose-500 w-4 h-4">
+                    <span>🚨 Di bawah ROP saja</span>
+                </label>
+
+                <!-- Tombol Submit & Toggle Filter Lanjutan -->
+                <div class="flex items-center gap-2">
+                    <button type="submit"
+                            class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:text-slate-900 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 cursor-pointer">
+                        Filter
+                    </button>
+                    <button type="button"
+                            x-on:click="showAdvanced = !showAdvanced"
+                            class="px-3 py-2 rounded-xl text-xs font-medium border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 transition-colors cursor-pointer">
+                        <span x-text="showAdvanced ? 'Tutup Filter' : 'Filter Lanjutan'"></span>
+                    </button>
+                    @if(request()->hasAny(['search', 'category_id', 'warehouse_id', 'abc_class', 'xyz_class', 'demand_pattern', 'source', 'param_status', 'below_rop']))
+                        <a href="{{ route('items.index') }}"
+                           class="px-3 py-2 rounded-xl text-xs font-medium text-slate-500 hover:text-rose-600 hover:underline">
+                            Reset
+                        </a>
+                    @endif
+                </div>
             </div>
-          </div>
-          <label class="switch-container">
-            <input type="checkbox" id="overrideToggle" class="switch-input">
-            <span class="switch-slider"></span>
-          </label>
-        </div>
 
-        {{-- Benchmark ML Reference Banner --}}
-        <div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.25);border-radius:6px;padding:10px 12px;margin-bottom:16px;display:flex;justify-content:space-between;font-size:12px;">
-          <div>
-            <span style="color:var(--text-muted);">Acuan Prediksi ML:</span>
-          </div>
-          <div style="display:flex;gap:16px;">
-            <span>ROP ML: <strong id="modalMlRop" style="color:#60a5fa;">-</strong></span>
-            <span>SS ML: <strong id="modalMlSs" style="color:#60a5fa;">-</strong></span>
-          </div>
-        </div>
+            <!-- Panel Filter Lanjutan -->
+            <div x-show="showAdvanced"
+                 x-cloak
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 -translate-y-2"
+                 x-transition:enter-end="opacity-100 translate-y-0"
+                 class="pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
 
-        {{-- Input Fields --}}
-        <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
-          <div>
-            <label class="form-label" for="inputManualRop" style="font-size:12px;">
-              Nilai ROP Baru <span class="text-danger">*</span>
-            </label>
-            <input type="number" step="0.01" min="0" id="inputManualRop" name="manual_rop" class="form-control" required>
-            <div class="text-sm text-muted" style="font-size:10px;margin-top:2px;">Ambang pemesanan kembali</div>
-          </div>
+                <!-- Kategori -->
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Kategori</label>
+                    <select name="category_id" class="w-full text-xs rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2">
+                        <option value="">Semua Kategori</option>
+                        @foreach($categories as $cat)
+                            <option value="{{ $cat->id }}" {{ request('category_id') == $cat->id ? 'selected' : '' }}>
+                                {{ $cat->name }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
 
-          <div>
-            <label class="form-label" for="inputManualSs" style="font-size:12px;">
-              Safety Stock Baru
-            </label>
-            <input type="number" step="0.01" min="0" id="inputManualSs" name="manual_safety_stock" class="form-control">
-            <div class="text-sm text-muted" style="font-size:10px;margin-top:2px;">Stok penyangga cadangan</div>
-          </div>
-        </div>
+                <!-- Gudang -->
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Gudang</label>
+                    <select name="warehouse_id" class="w-full text-xs rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2">
+                        <option value="">Semua Gudang</option>
+                        @foreach($warehouses as $wh)
+                            <option value="{{ $wh->id }}" {{ request('warehouse_id') == $wh->id ? 'selected' : '' }}>
+                                {{ $wh->name }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
 
-        {{-- Reason / Audit Note --}}
-        <div style="margin-bottom:6px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-            <label class="form-label" for="inputReason" style="font-size:12px;margin:0;">
-              Alasan Override <span class="text-danger">*</span>
-            </label>
-            <span id="reasonCharCount" style="font-size:10px;color:var(--text-muted);">0 / 100</span>
-          </div>
-          <input type="text" id="inputReason" name="override_reason" maxlength="100" class="form-control" 
-                 placeholder="Contoh: Lonjakan permintaan tender Q4 / supplier delay">
-        </div>
-      </div>
+                <!-- Kelas ABC -->
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Kelas ABC</label>
+                    <select name="abc_class" class="w-full text-xs rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2">
+                        <option value="">Semua ABC</option>
+                        @foreach(['A', 'B', 'C'] as $cls)
+                            <option value="{{ $cls }}" {{ request('abc_class') == $cls ? 'selected' : '' }}>Kelas {{ $cls }}</option>
+                        @endforeach
+                    </select>
+                </div>
 
-      <div class="modal-actions d-flex justify-end gap-2" style="border-top:1px solid var(--border);padding-top:14px;">
-        <button type="button" class="btn btn-secondary" id="cancelOverrideBtn">Batal</button>
-        <button type="submit" class="btn btn-primary" id="saveOverrideBtn">
-          <span class="btn-text">💾 Simpan Perubahan</span>
-        </button>
-      </div>
-    </form>
-  </div>
-</div>
+                <!-- Kelas XYZ -->
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Kelas XYZ</label>
+                    <select name="xyz_class" class="w-full text-xs rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2">
+                        <option value="">Semua XYZ</option>
+                        @foreach(['X', 'Y', 'Z'] as $cls)
+                            <option value="{{ $cls }}" {{ request('xyz_class') == $cls ? 'selected' : '' }}>Kelas {{ $cls }}</option>
+                        @endforeach
+                    </select>
+                </div>
 
-@if(auth()->user()->isGudang())
-{{-- Import Excel Modal --}}
-<div id="importModal" class="modal-backdrop" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:999;align-items:center;justify-content:center;">
-  <div class="card" style="width:100%;max-width:500px;margin:20px;">
-    <div class="card-header d-flex justify-between align-center">
-      <span class="card-title">Import Data Barang</span>
-      <button type="button" onclick="document.getElementById('importModal').style.display='none'" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-muted);">&times;</button>
+                <!-- Pola Permintaan -->
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Pola Demand</label>
+                    <select name="demand_pattern" class="w-full text-xs rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2">
+                        <option value="">Semua Pola</option>
+                        <option value="smooth" {{ request('demand_pattern') == 'smooth' ? 'selected' : '' }}>Smooth</option>
+                        <option value="intermittent" {{ request('demand_pattern') == 'intermittent' ? 'selected' : '' }}>Intermittent</option>
+                        <option value="erratic" {{ request('demand_pattern') == 'erratic' ? 'selected' : '' }}>Erratic</option>
+                        <option value="lumpy" {{ request('demand_pattern') == 'lumpy' ? 'selected' : '' }}>Lumpy</option>
+                    </select>
+                </div>
+
+                <!-- Sumber Parameter -->
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Sumber Parameter</label>
+                    <select name="source" class="w-full text-xs rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2">
+                        <option value="">Semua Sumber</option>
+                        <option value="ML" {{ request('source') == 'ML' ? 'selected' : '' }}>ML (FastAPI)</option>
+                        <option value="STATIC_CATEGORY" {{ request('source') == 'STATIC_CATEGORY' ? 'selected' : '' }}>Statis Kategori</option>
+                        <option value="FALLBACK_LAST_APPROVED" {{ request('source') == 'FALLBACK_LAST_APPROVED' ? 'selected' : '' }}>Fallback</option>
+                    </select>
+                </div>
+
+                <!-- Status Parameter -->
+                <div class="sm:col-span-2 lg:col-span-2">
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Status Parameter</label>
+                    <select name="param_status" class="w-full text-xs rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2">
+                        <option value="">Semua Status</option>
+                        <option value="ACTIVE" {{ request('param_status') == 'ACTIVE' ? 'selected' : '' }}>Aktif (ACTIVE)</option>
+                        <option value="PENDING_REVIEW" {{ request('param_status') == 'PENDING_REVIEW' ? 'selected' : '' }}>Perlu Review (PENDING_REVIEW)</option>
+                        <option value="APPROVED" {{ request('param_status') == 'APPROVED' ? 'selected' : '' }}>Disetujui (APPROVED)</option>
+                        <option value="REJECTED" {{ request('param_status') == 'REJECTED' ? 'selected' : '' }}>Ditolak (REJECTED)</option>
+                        <option value="SUPERSEDED" {{ request('param_status') == 'SUPERSEDED' ? 'selected' : '' }}>Tergantikan (SUPERSEDED)</option>
+                        <option value="NONE" {{ request('param_status') == 'NONE' ? 'selected' : '' }}>Belum Ada Parameter</option>
+                    </select>
+                </div>
+            </div>
+        </form>
     </div>
-    <div class="card-body">
-      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">
-        Unggah file Excel (.xlsx / .csv) dari sistem SAP/ERP Anda untuk sinkronisasi inventaris.
-      </p>
-      <form action="{{ route('items.import') }}" method="POST" enctype="multipart/form-data">
-        @csrf
-        <div class="form-group">
-          <label class="form-label">Pilih File Excel/CSV <span class="text-danger">*</span></label>
-          <input type="file" name="file" class="form-control" accept=".xlsx,.xls,.csv" required>
+
+    <!-- ── Data Table Master SKU ─────────────────────────────────────────── -->
+    <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col">
+        <div class="overflow-x-auto table-scroll-container w-full">
+            <table class="w-full text-left text-sm text-slate-700 dark:text-slate-300 divide-y divide-slate-200 dark:divide-slate-800">
+                <thead class="bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 text-xs font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-4 py-3.5 whitespace-nowrap">SKU</th>
+                        <th class="px-4 py-3.5">Nama Barang</th>
+                        <th class="px-4 py-3.5 whitespace-nowrap">Kategori</th>
+                        <th class="px-4 py-3.5 whitespace-nowrap">Gudang</th>
+                        <th class="px-4 py-3.5 text-center whitespace-nowrap">Kelas</th>
+                        <th class="px-4 py-3.5 hidden lg:table-cell whitespace-nowrap">Pola</th>
+                        <th class="px-4 py-3.5 text-right whitespace-nowrap">On Hand</th>
+                        <th class="px-4 py-3.5 text-right whitespace-nowrap">Inv. Position</th>
+                        <th class="px-4 py-3.5 text-right whitespace-nowrap">ROP</th>
+                        <th class="px-4 py-3.5 text-right whitespace-nowrap">SS</th>
+                        <th class="px-4 py-3.5 text-right whitespace-nowrap">MAX</th>
+                        <th class="px-4 py-3.5 hidden lg:table-cell whitespace-nowrap">Sumber</th>
+                        <th class="px-4 py-3.5 whitespace-nowrap">Status Parameter</th>
+                        <th class="px-4 py-3.5 text-right whitespace-nowrap">Aksi</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 dark:divide-slate-800/60 bg-white dark:bg-slate-900">
+                    @forelse($items as $item)
+                        @php
+                            $param = $item->activeParameter;
+                            $classification = $item->classification;
+                            $effectiveRop = $param ? (float)$param->effective_rop : 0;
+                            $invPosition = (float)($item->inventory_position_calc ?? $item->inventory_position);
+                            $isBelowRop = $param && $effectiveRop > 0 && ($invPosition <= $effectiveRop);
+                            $abcXyz = ($classification?->abc_class ?? '-') . ($classification?->xyz_class ?? '-');
+                        @endphp
+                        <tr class="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors {{ $isBelowRop ? 'bg-rose-50/30 dark:bg-rose-950/15' : '' }}">
+                            <!-- SKU -->
+                            <td class="px-4 py-3 font-mono font-bold text-xs text-slate-900 dark:text-white whitespace-nowrap">
+                                <a href="{{ route('items.show', $item) }}" class="hover:text-emerald-600 hover:underline">
+                                    {{ $item->sku }}
+                                </a>
+                            </td>
+
+                            <!-- Nama & Peringatan Jika di bawah ROP -->
+                            <td class="px-4 py-3 font-medium text-slate-800 dark:text-slate-200 max-w-xs">
+                                <div class="truncate" title="{{ $item->name }}">{{ $item->name }}</div>
+                                @if($isBelowRop)
+                                    <div class="mt-0.5 inline-flex items-center gap-1 text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                        </svg>
+                                        <span>Di bawah ROP</span>
+                                    </div>
+                                @endif
+                            </td>
+
+                            <!-- Kategori -->
+                            <td class="px-4 py-3 text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                                {{ $item->category?->name ?? '-' }}
+                            </td>
+
+                            <!-- Gudang -->
+                            <td class="px-4 py-3 text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                                {{ $item->warehouse?->name ?? '-' }}
+                            </td>
+
+                            <!-- Kelas ABC-XYZ -->
+                            <td class="px-4 py-3 text-center whitespace-nowrap">
+                                @if($classification)
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-md font-mono text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
+                                        {{ $abcXyz }}
+                                    </span>
+                                @else
+                                    <span class="text-xs text-slate-400">-</span>
+                                @endif
+                            </td>
+
+                            <!-- Pola Permintaan -->
+                            <td class="px-4 py-3 hidden lg:table-cell text-xs capitalize text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                                {{ $classification?->demand_pattern ?? '-' }}
+                            </td>
+
+                            <!-- On Hand -->
+                            <td class="px-4 py-3 text-right font-medium whitespace-nowrap">
+                                {{ format_number_id($item->stock_on_hand) }} <span class="text-[11px] text-slate-400">{{ $item->unit }}</span>
+                            </td>
+
+                            <!-- Inventory Position -->
+                            <td class="px-4 py-3 text-right font-semibold whitespace-nowrap {{ $isBelowRop ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white' }}">
+                                {{ format_number_id($invPosition) }}
+                            </td>
+
+                            <!-- ROP -->
+                            <td class="px-4 py-3 text-right font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                                {{ $param ? format_number_id($param->effective_rop) : '-' }}
+                            </td>
+
+                            <!-- SS -->
+                            <td class="px-4 py-3 text-right text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                                {{ $param ? format_number_id($param->effective_ss) : '-' }}
+                            </td>
+
+                            <!-- MAX -->
+                            <td class="px-4 py-3 text-right text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                                {{ $param ? format_number_id($param->effective_max) : '-' }}
+                            </td>
+
+                            <!-- Sumber Parameter -->
+                            <td class="px-4 py-3 hidden lg:table-cell text-xs whitespace-nowrap">
+                                @if($param)
+                                    <span class="text-[11px] font-mono px-2 py-0.5 rounded-md bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
+                                        {{ $param->source }}
+                                    </span>
+                                @else
+                                    <span class="text-slate-400">-</span>
+                                @endif
+                            </td>
+
+                            <!-- Status Parameter Badge -->
+                            <td class="px-4 py-3 whitespace-nowrap">
+                                @if($param)
+                                    <x-badge :status="$param->status" />
+                                @else
+                                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                                        <span>Belum ada parameter</span>
+                                    </span>
+                                @endif
+                            </td>
+
+                            <!-- Aksi -->
+                            <td class="px-4 py-3 text-right whitespace-nowrap">
+                                <div class="inline-flex items-center gap-2">
+                                    <a href="{{ route('items.show', $item) }}"
+                                       class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline">
+                                        Detail &rarr;
+                                    </a>
+                                    @can('manage-sku')
+                                        <a href="{{ route('items.edit', $item) }}"
+                                           class="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1"
+                                           title="Edit SKU">
+                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                            </svg>
+                                        </a>
+                                    @endcan
+                                </div>
+                            </td>
+                        </tr>
+                    @empty
+                        <tr>
+                            <td colspan="14" class="px-6 py-12 text-center text-slate-500 dark:text-slate-400">
+                                <div class="flex flex-col items-center justify-center gap-2">
+                                    <svg class="w-10 h-10 text-slate-300 dark:text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+                                    </svg>
+                                    <span class="font-medium text-slate-600 dark:text-slate-300">Tidak ada SKU yang cocok dengan filter.</span>
+                                </div>
+                            </td>
+                        </tr>
+                    @endforelse
+                </tbody>
+            </table>
         </div>
-        <div class="d-flex justify-end gap-2 mt-4">
-          <button type="button" class="btn btn-secondary" onclick="document.getElementById('importModal').style.display='none'">Batal</button>
-          <button type="submit" class="btn btn-primary">Mulai Import</button>
-        </div>
-      </form>
+
+        <!-- Pagination -->
+        @if($items->hasPages())
+            <div class="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+                {{ $items->links() }}
+            </div>
+        @endif
     </div>
-  </div>
+
 </div>
-@endif
 @endsection
-
-@push('scripts')
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  // ── 1. Search Debounce Optimization (350ms) ────────────────────────────────
-  const searchInput = document.getElementById('searchInput');
-  const filterForm  = document.getElementById('filterForm');
-  let searchTimer   = null;
-
-  if (searchInput && filterForm) {
-    searchInput.addEventListener('input', () => {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => {
-        filterForm.submit();
-      }, 350);
-    });
-  }
-
-  // ── 2. Quick Override Modal Logic ──────────────────────────────────────────
-  const modal           = document.getElementById('quickOverrideModal');
-  const modalSubtitle   = document.getElementById('modalItemSubtitle');
-  const modalMlRop      = document.getElementById('modalMlRop');
-  const modalMlSs       = document.getElementById('modalMlSs');
-  const form            = document.getElementById('quickOverrideForm');
-  const toggle          = document.getElementById('overrideToggle');
-  const inputRop        = document.getElementById('inputManualRop');
-  const inputSs         = document.getElementById('inputManualSs');
-  const inputReason     = document.getElementById('inputReason');
-  const charCounter     = document.getElementById('reasonCharCount');
-  const closeBtn        = document.getElementById('closeOverrideModal');
-  const cancelBtn       = document.getElementById('cancelOverrideBtn');
-  const saveBtn         = document.getElementById('saveOverrideBtn');
-
-  let activeItemData    = null;
-
-  function closeModal() {
-    if (modal) {
-      modal.classList.remove('open');
-      modal.style.display = 'none';
-    }
-  }
-
-  closeBtn?.addEventListener('click', closeModal);
-  cancelBtn?.addEventListener('click', closeModal);
-  modal?.addEventListener('click', (e) => {
-    if (e.target === modal) closeModal();
-  });
-
-  // Live Character Counter
-  inputReason?.addEventListener('input', function() {
-    charCounter.textContent = `${this.value.length} / 100`;
-  });
-
-  // Switch Toggle Behavior: enable/disable inputs
-  toggle?.addEventListener('change', function() {
-    const isChecked = this.checked;
-    inputRop.disabled    = !isChecked;
-    inputSs.disabled     = !isChecked;
-    inputReason.disabled = !isChecked;
-
-    if (!isChecked) {
-      inputRop.value    = activeItemData ? activeItemData.mlRop : '';
-      inputSs.value     = activeItemData ? activeItemData.mlSs : '';
-      inputReason.value = '';
-      charCounter.textContent = '0 / 100';
-    }
-  });
-
-  // Open Modal on Button Click
-  document.querySelectorAll('.btn-quick-override').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const d = btn.dataset;
-      activeItemData = {
-        id:         d.id,
-        code:       d.code,
-        name:       d.name,
-        unit:       d.unit,
-        stock:      parseFloat(d.stock) || 0,
-        rop:        parseFloat(d.rop) || 0,
-        ss:         parseFloat(d.ss) || 0,
-        mlRop:      parseFloat(d.mlRop) || 0,
-        mlSs:       parseFloat(d.mlSs) || 0,
-        isOverride: d.isOverride === '1',
-        reason:     d.reason || '',
-        urlOverride:d.urlOverride,
-        urlReset:   d.urlReset,
-      };
-
-      // Populate Modal Fields
-      modalSubtitle.textContent = `[${activeItemData.code}] ${activeItemData.name} · Satuan: ${activeItemData.unit}`;
-      modalMlRop.textContent    = `${activeItemData.mlRop} ${activeItemData.unit}`;
-      modalMlSs.textContent     = `${activeItemData.mlSs} ${activeItemData.unit}`;
-
-      toggle.checked = activeItemData.isOverride;
-      inputRop.value = activeItemData.rop;
-      inputSs.value  = activeItemData.ss;
-      inputReason.value = activeItemData.reason;
-      charCounter.textContent = `${activeItemData.reason.length} / 100`;
-
-      // Enable or disable based on toggle initial state
-      inputRop.disabled    = !toggle.checked;
-      inputSs.disabled     = !toggle.checked;
-      inputReason.disabled = !toggle.checked;
-
-      // Show Modal
-      modal.style.display = 'flex';
-      modal.classList.add('open');
-      if (toggle.checked) {
-        inputRop.focus();
-      }
-    });
-  });
-
-  // ── 3. Form Submit Handler via AJAX (Optimistic UI & Toast) ─────────────────
-  form?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    if (!activeItemData) return;
-
-    const isEnablingOverride = toggle.checked;
-    const manualRop = parseFloat(inputRop.value);
-    const manualSs  = inputSs.value !== '' ? parseFloat(inputSs.value) : null;
-    const reason    = inputReason.value.trim();
-
-    // Client-side Validation
-    if (isEnablingOverride) {
-      if (isNaN(manualRop) || manualRop < 0) {
-        window.showToast('Nilai ROP harus berupa angka positif (≥ 0).', 'error');
-        inputRop.focus();
-        return;
-      }
-      if (manualSs !== null && (isNaN(manualSs) || manualSs < 0)) {
-        window.showToast('Nilai Safety Stock harus berupa angka positif (≥ 0).', 'error');
-        inputSs.focus();
-        return;
-      }
-      if (!reason) {
-        window.showToast('Alasan manual override wajib diisi untuk catatan audit.', 'warning');
-        inputReason.focus();
-        return;
-      }
-    }
-
-    // Indicate loading state
-    saveBtn.disabled = true;
-    const originalBtnText = saveBtn.innerHTML;
-    saveBtn.innerHTML = '<span>Menyimpan...</span>';
-
-    try {
-      const targetUrl = isEnablingOverride ? activeItemData.urlOverride : activeItemData.urlReset;
-      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-
-      const formData = new FormData();
-      if (isEnablingOverride) {
-        formData.append('manual_rop', manualRop);
-        if (manualSs !== null) formData.append('manual_safety_stock', manualSs);
-        formData.append('override_reason', reason);
-      }
-
-      const res = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'X-CSRF-TOKEN': csrfToken,
-          'Accept': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest'
-        },
-        body: formData
-      });
-
-      const result = await res.json();
-
-      if (res.ok && result.success) {
-        // Optimistic UI Update on the target row
-        const row = document.getElementById(`item-row-${activeItemData.id}`);
-        if (row && result.item) {
-          const item = result.item;
-          
-          // Update ROP & SS text
-          const ropElem = row.querySelector('.row-rop-val');
-          const ssElem  = row.querySelector('.row-ss-val');
-          if (ropElem) ropElem.textContent = Number(item.rop).toFixed(1);
-          if (ssElem)  ssElem.innerHTML = `${Number(item.safety_stock).toFixed(1)} <span class="text-muted" style="font-size:11px;">${item.unit}</span>`;
-
-          // Update Badge Source (ML vs Override)
-          const badgeContainer = row.querySelector('.row-param-badge');
-          if (badgeContainer) {
-            badgeContainer.innerHTML = item.is_manual_override
-              ? `<span class="badge-param-override" title="Di-override secara manual">👤 Manual</span>`
-              : `<span class="badge-param-ml" title="Prediksi Machine Learning">🤖 ML</span>`;
-          }
-
-          // Update Status Badge & Row Alert Highlight
-          const statusContainer = row.querySelector('.row-status-badge');
-          if (item.is_reorder_needed && item.stock_status !== 'out_of_stock') {
-            row.classList.add('row-reorder-alert');
-            if (statusContainer) {
-              statusContainer.innerHTML = `<span class="badge badge-warning">⚠️ Butuh Order</span>`;
-            }
-          } else {
-            row.classList.remove('row-reorder-alert');
-            if (statusContainer) {
-              if (item.stock_status === 'out_of_stock') {
-                statusContainer.innerHTML = `<span class="badge badge-danger">⛔ Habis</span>`;
-              } else if (item.stock_status === 'critical') {
-                statusContainer.innerHTML = `<span class="badge badge-danger">Kritis</span>`;
-              } else {
-                statusContainer.innerHTML = `<span class="badge badge-success">✓ Aman</span>`;
-              }
-            }
-          }
-
-          // Update button data attributes for next click
-          const overrideBtn = row.querySelector('.btn-quick-override');
-          if (overrideBtn) {
-            overrideBtn.dataset.rop        = item.rop;
-            overrideBtn.dataset.ss         = item.safety_stock;
-            overrideBtn.dataset.isOverride = item.is_manual_override ? '1' : '0';
-            overrideBtn.dataset.reason     = item.override_reason || '';
-          }
-        }
-
-        closeModal();
-        window.showToast(result.message || 'Parameter berhasil diperbarui.', 'success');
-      } else {
-        window.showToast(result.message || 'Gagal menyimpan parameter.', 'error');
-      }
-    } catch (err) {
-      window.showToast('Terjadi kesalahan jaringan atau server saat menyimpan.', 'error');
-    } finally {
-      saveBtn.disabled = false;
-      saveBtn.innerHTML = originalBtnText;
-    }
-  });
-});
-</script>
-@endpush

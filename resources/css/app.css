@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+[x-cloak] {
+    display: none !important;
+}
+
+/* Custom scrollbars for enterprise horizontal data tables */
+.table-scroll-container::-webkit-scrollbar {
+    height: 6px;
+    width: 6px;
+}
+.table-scroll-container::-webkit-scrollbar-track {
+    background: #f1f5f9;
+}
+.table-scroll-container::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 3px;
+}
+.table-scroll-container::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}

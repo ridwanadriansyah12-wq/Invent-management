@@ -3,13 +3,16 @@
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\InventoryHealthController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\ReportController;
+use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\TransactionController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\WarehouseController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -45,27 +48,49 @@ Route::middleware('auth')->group(function () {
         Route::delete('/{notification}',      [NotificationController::class, 'destroy'])->name('destroy');
     });
 
-    // ── Shared read/write: Items & Transactions (Gudang + Procurement) ────────
-    Route::middleware('role:gudang,procurement')->group(function () {
-        Route::get('/items',                       [ItemController::class, 'index'])->name('items.index');
-        Route::get('/items/{item}',                [ItemController::class, 'show'])->name('items.show');
-        Route::post('/items/{item}/override',      [ItemController::class, 'overrideParameters'])->name('items.override');
-        Route::post('/items/{item}/reset-override', [ItemController::class, 'resetOverride'])->name('items.reset-override');
-        Route::get('/transactions',                [TransactionController::class, 'index'])->name('transactions.index');
-    });
-
-    // ── Gudang-only write routes ─────────────────────────────────────────────
-    Route::middleware('role:gudang')->group(function () {
-        Route::post('/items/import',             [ItemController::class, 'import'])->name('items.import');
+    // ── Master SKU Mutasi (Khusus Admin — Approver & Staff 403) ───────────────
+    Route::middleware('can:manage-sku')->group(function () {
         Route::get('/items/create',              [ItemController::class, 'create'])->name('items.create');
         Route::post('/items',                    [ItemController::class, 'store'])->name('items.store');
         Route::get('/items/{item}/edit',         [ItemController::class, 'edit'])->name('items.edit');
         Route::put('/items/{item}',              [ItemController::class, 'update'])->name('items.update');
         Route::delete('/items/{item}',           [ItemController::class, 'destroy'])->name('items.destroy');
-        Route::post('/items/{item}/recalculate', [ItemController::class, 'recalculate'])->name('items.recalculate');
+    });
 
-        Route::get('/transactions/create',       [TransactionController::class, 'create'])->name('transactions.create');
-        Route::post('/transactions',             [TransactionController::class, 'store'])->name('transactions.store');
+    // ── Master SKU & Persediaan (Semua Peran: Admin, Approver, Staff) ────────
+    Route::middleware('can:view-inventory')->group(function () {
+        Route::get('/items',        [ItemController::class, 'index'])->name('items.index');
+        Route::get('/items/{item}', [ItemController::class, 'show'])->name('items.show');
+
+        // Stock Movements (Buku Besar & Pencatatan Mutasi)
+        Route::get('/stock-movements',        [StockMovementController::class, 'index'])->name('stock-movements.index');
+        Route::get('/stock-movements/create', [StockMovementController::class, 'create'])->name('stock-movements.create');
+        Route::post('/stock-movements',       [StockMovementController::class, 'store'])->name('stock-movements.store');
+        Route::get('/stock-movements/export', [StockMovementController::class, 'export'])->name('stock-movements.export');
+
+        // Backward compatibility routes for transactions
+        Route::get('/transactions',           [TransactionController::class, 'index'])->name('transactions.index');
+        Route::get('/transactions/create',    [TransactionController::class, 'create'])->name('transactions.create');
+        Route::post('/transactions',          [TransactionController::class, 'store'])->name('transactions.store');
+
+        // Kapasitas Gudang (Warehouses)
+        Route::get('/warehouses',             [WarehouseController::class, 'index'])->name('warehouses.index');
+        Route::get('/warehouses/{warehouse}', [WarehouseController::class, 'show'])->name('warehouses.show');
+
+        // Diagnostik & Simulator Kebijakan Persediaan
+        Route::get('/inventory/health',       [InventoryHealthController::class, 'index'])->name('inventory.health');
+        Route::get('/inventory/simulator',    [InventoryHealthController::class, 'simulator'])->name('inventory.simulator');
+    });
+
+    // ── Manajemen Gudang & Kapasitas (Khusus Admin) ───────────────────────────
+    Route::middleware('can:manage-settings')->group(function () {
+        Route::post('/warehouses',                            [WarehouseController::class, 'store'])->name('warehouses.store');
+        Route::put('/warehouses/{warehouse}',                 [WarehouseController::class, 'update'])->name('warehouses.update');
+        Route::post('/warehouses/{warehouse}/check-capacity', [WarehouseController::class, 'triggerCheck'])->name('warehouses.check-capacity');
+    });
+
+    // ── Master Pendukung (Kategori & Supplier) ───────────────────────────────
+    Route::middleware('role:staff,admin')->group(function () {
 
         Route::get('/categories',                [CategoryController::class, 'index'])->name('categories.index');
         Route::post('/categories',               [CategoryController::class, 'store'])->name('categories.store');
@@ -102,5 +127,26 @@ Route::middleware('auth')->group(function () {
         Route::get('/users/{user}/edit',         [UserController::class, 'edit'])->name('users.edit');
         Route::put('/users/{user}',              [UserController::class, 'update'])->name('users.update');
         Route::post('/users/{user}/toggle-active',[UserController::class, 'toggleActive'])->name('users.toggle-active');
+    });
+
+    // ── Navigation Counters JSON (Lightweight 60s Polling) ───────────────────
+    Route::get('/nav/counters', function () {
+        return response()->json([
+            'pending_reviews'   => \Illuminate\Support\Facades\Cache::remember('prism_pending_review_count', 60, fn() => \App\Models\InventoryParameter::where('status', 'PENDING_REVIEW')->count()),
+            'unresolved_alerts' => \Illuminate\Support\Facades\Cache::remember('prism_unresolved_alerts_count', 60, fn() => \App\Models\SystemAlert::whereNull('resolved_at')->count()),
+            'open_prs'          => \Illuminate\Support\Facades\Cache::remember('prism_open_pr_count', 60, fn() => \App\Models\PurchaseRequisition::where('status', 'OPEN')->count()),
+        ]);
+    })->name('nav.counters');
+
+    // ── Pipeline Trigger (Admin Only) ────────────────────────────────────────
+    Route::middleware('can:run-pipeline')->group(function () {
+        Route::post('/pipeline/run-now', function (\App\Services\Inventory\InventoryPipelineCoordinator $coordinator) {
+            try {
+                $summary = $coordinator->runDailyPipeline(null, auth()->id());
+                return back()->with('success', 'Pipeline persediaan harian berhasil dijalankan! (ID Run: ' . substr($summary['run_id'], 0, 8) . ')');
+            } catch (\Throwable $e) {
+                return back()->with('error', 'Gagal menjalankan pipeline: ' . $e->getMessage());
+            }
+        })->name('pipeline.run-now');
     });
 });

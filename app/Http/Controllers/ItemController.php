@@ -3,364 +3,358 @@
 namespace App\Http\Controllers;
 
 use App\Models\Category;
+use App\Models\DailyDemand;
+use App\Models\ForecastRun;
+use App\Models\InventoryParameter;
 use App\Models\Item;
-use App\Models\Supplier;
-use App\Services\InventoryParameterService;
-use App\Services\MLInventoryEngine;
+use App\Models\StockMovement;
+use App\Models\Warehouse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 class ItemController extends Controller
 {
-    public function __construct(
-        private MLInventoryEngine $ml,
-        private InventoryParameterService $paramService
-    ) {}
-
+    /**
+     * Tampilkan daftar Master SKU dengan filter lengkap & proteksi performa.
+     */
     public function index(Request $request)
     {
-        $query = Item::with(['category', 'supplier'])->active();
+        $prOutstandingSubquery = 'COALESCE((
+            SELECT SUM(pr.q_final) FROM purchase_requisitions pr
+            WHERE pr.item_id = items.id AND pr.status IN (\'OPEN\', \'ORDERED\')
+        ), 0)';
 
-        if ($search = $request->get('search')) {
+        $activeParamSubquery = 'SELECT ip_sub.id FROM inventory_parameters ip_sub
+            WHERE ip_sub.item_id = items.id
+              AND ip_sub.status IN (\'ACTIVE\', \'APPROVED\')
+            ORDER BY ip_sub.computed_at DESC, ip_sub.id DESC
+            LIMIT 1';
+
+        $query = Item::query()
+            ->select('items.*')
+            ->selectRaw("({$prOutstandingSubquery}) as outstanding_pr_qty")
+            ->selectRaw("(items.stock_on_hand + {$prOutstandingSubquery}) as inventory_position_calc")
+            ->with(['category', 'warehouse', 'activeParameter', 'classification'])
+            ->where('items.is_active', true);
+
+        // 1. Filter Pencarian SKU / Nama
+        if ($search = trim($request->get('search', ''))) {
             $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('code', 'like', "%{$search}%");
+                $q->where('items.sku', 'like', "%{$search}%")
+                  ->orWhere('items.name', 'like', "%{$search}%");
             });
         }
 
-        if ($cat = $request->get('category_id')) {
-            $query->where('category_id', $cat);
+        // 2. Filter Kategori
+        if ($catId = $request->get('category_id')) {
+            $query->where('items.category_id', $catId);
         }
 
-        if ($status = $request->get('status')) {
-            match($status) {
-                'out'      => $query->outOfStock(),
-                'low'      => $query->lowStock(),
-                'critical' => $query->critical(),
-                'normal'   => $query->whereRaw('stock_on_hand > rop'),
-                default    => null,
-            };
+        // 3. Filter Gudang
+        if ($whId = $request->get('warehouse_id')) {
+            $query->where('items.warehouse_id', $whId);
         }
 
-        // Quick filter: Hanya barang yang butuh reorder (Stok <= ROP)
-        if ($request->boolean('reorder_only')) {
-            $query->whereRaw('stock_on_hand <= rop AND rop > 0');
+        // 4. Filter Kelas ABC
+        if ($abc = $request->get('abc_class')) {
+            $query->whereHas('classification', fn($q) => $q->where('abc_class', strtoupper($abc)));
         }
 
-        // Filter berdasarkan mode parameter: Manual Override vs ML Prediction
-        if ($mode = $request->get('override_mode')) {
-            if ($mode === 'manual') {
-                $query->where('is_manual_override', true);
-            } elseif ($mode === 'ml') {
-                $query->where('is_manual_override', false);
+        // 5. Filter Kelas XYZ
+        if ($xyz = $request->get('xyz_class')) {
+            $query->whereHas('classification', fn($q) => $q->where('xyz_class', strtoupper($xyz)));
+        }
+
+        // 6. Filter Pola Permintaan
+        if ($pattern = $request->get('demand_pattern')) {
+            $query->whereHas('classification', fn($q) => $q->where('demand_pattern', strtolower($pattern)));
+        }
+
+        // 7. Filter Sumber Parameter
+        if ($source = $request->get('source')) {
+            $query->whereHas('activeParameter', fn($q) => $q->where('source', $source));
+        }
+
+        // 8. Filter Status Parameter
+        if ($paramStatus = $request->get('param_status')) {
+            if ($paramStatus === 'NONE') {
+                $query->whereDoesntHave('activeParameter');
+            } else {
+                $query->whereHas('activeParameter', fn($q) => $q->where('status', $paramStatus));
             }
         }
 
-        $items      = $query->orderBy('name')->paginate(20)->withQueryString();
+        // 9. Filter Toggle "Di bawah ROP saja"
+        if ($request->boolean('below_rop')) {
+            $query->whereExists(function ($q) use ($activeParamSubquery, $prOutstandingSubquery) {
+                $q->select(DB::raw(1))
+                    ->from('inventory_parameters as ip')
+                    ->whereRaw("ip.id = ({$activeParamSubquery})")
+                    ->where('ip.effective_rop', '>', 0)
+                    ->whereRaw("(items.stock_on_hand + {$prOutstandingSubquery}) <= ip.effective_rop");
+            });
+        }
+
+        $items = $query->orderBy('items.name')->paginate(20)->withQueryString();
         $categories = Category::orderBy('name')->get();
+        $warehouses = Warehouse::orderBy('name')->get();
 
-        // Metrik cepat untuk quick-filter tabs / counter pills
-        $stats = [
-            'total'          => Item::active()->count(),
-            'reorder_needed' => Item::active()->whereRaw('stock_on_hand <= rop AND rop > 0')->count(),
-            'critical'       => Item::active()->whereRaw('stock_on_hand <= safety_stock AND safety_stock > 0')->count(),
-            'overridden'     => Item::active()->where('is_manual_override', true)->count(),
-        ];
-
-        return view('items.index', compact('items', 'categories', 'stats'));
+        return view('items.index', compact('items', 'categories', 'warehouses'));
     }
 
+    /**
+     * Tampilkan formulir pembuatan Master SKU baru (Khusus Admin).
+     */
     public function create()
     {
+        $this->authorize('manage-sku');
+
         $categories = Category::orderBy('name')->get();
-        $suppliers  = Supplier::orderBy('name')->get();
-        return view('items.create', compact('categories', 'suppliers'));
+        $warehouses = Warehouse::orderBy('name')->get();
+
+        return view('items.create', compact('categories', 'warehouses'));
     }
 
+    /**
+     * Simpan Master SKU baru ke basis data (Khusus Admin).
+     */
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'category_id'     => ['required', 'exists:categories,id'],
-            'supplier_id'     => ['nullable', 'exists:suppliers,id'],
-            'code'            => ['required', 'string', 'max:50', 'unique:items,code'],
-            'name'            => ['required', 'string', 'max:200'],
-            'unit'            => ['required', 'string', 'max:30'],
-            'description'     => ['nullable', 'string'],
-            'stock_on_hand'   => ['required', 'numeric', 'min:0'],
-            'lead_time_days'  => ['required', 'integer', 'min:1', 'max:365'],
-            'coverage_period' => ['required', 'integer', 'min:1', 'max:365'],
+        $this->authorize('manage-sku');
+
+        $validator = Validator::make($request->all(), [
+            'sku'                => ['required', 'string', 'max:50', 'unique:items,sku'],
+            'name'               => ['required', 'string', 'max:200'],
+            'category_id'        => ['required', 'exists:categories,id'],
+            'warehouse_id'       => ['required', 'exists:warehouses,id'],
+            'unit'               => ['required', 'string', 'max:30'],
+            'description'        => ['nullable', 'string', 'max:1000'],
+            'stock_on_hand'      => ['required', 'numeric', 'min:0'],
+            'unit_cost'          => ['required', 'numeric', 'min:0'],
+            'volume_m3'          => ['required', 'numeric', 'gt:0'],
+            'moq'                => ['required', 'numeric', 'gt:0'],
+            'lot_size'           => ['required', 'numeric', 'gt:0'],
+            'lead_time_days'     => ['required', 'integer', 'min:1', 'max:365'],
+            'lead_time_std_days' => ['nullable', 'numeric', 'min:0', 'max:90'],
+        ], [
+            'sku.required'            => 'Kode SKU wajib diisi.',
+            'sku.unique'              => 'Kode SKU ini sudah terdaftar.',
+            'name.required'           => 'Nama barang wajib diisi.',
+            'category_id.required'    => 'Kategori barang wajib dipilih.',
+            'warehouse_id.required'   => 'Gudang penempatan wajib dipilih.',
+            'unit.required'           => 'Satuan barang wajib diisi.',
+            'stock_on_hand.min'       => 'Stok fisik tidak boleh bernilai negatif.',
+            'unit_cost.min'           => 'Harga pokok satuan (Unit Cost) tidak boleh bernilai negatif.',
+            'volume_m3.gt'            => 'Volume per unit harus lebih besar dari 0 m³.',
+            'moq.gt'                  => 'MOQ (Minimum Order Quantity) harus lebih besar dari 0.',
+            'lot_size.gt'             => 'Lot Size harus lebih besar dari 0.',
+            'lead_time_days.min'      => 'Lead time minimal 1 hari.',
+            'lead_time_days.max'      => 'Lead time maksimal 365 hari.',
         ]);
 
-        $item = Item::create($validated);
+        // Validasi kelipatan Lot Size menggunakan bcmath sesuai spesifikasi
+        $validator->after(function ($validator) use ($request) {
+            $moq = $request->input('moq');
+            $lotSize = $request->input('lot_size');
 
-        // Initial ML calculation (no history yet, will use defaults)
-        $this->ml->recalculate($item);
+            if (is_numeric($moq) && is_numeric($lotSize) && (float)$lotSize > 0) {
+                $mod = bcmod((string)$moq, (string)$lotSize, 4);
+                if (bccomp($mod, '0', 4) !== 0) {
+                    $validator->errors()->add('moq', "Nilai MOQ ({$moq}) harus merupakan kelipatan bulat dari Lot Size ({$lotSize}).");
+                }
+            }
+        });
+
+        $validated = $validator->validate();
+
+        $item = DB::transaction(function () use ($validated) {
+            $data = $validated;
+            $data['is_active'] = true;
+            $data['lead_time_std_days'] = $data['lead_time_std_days'] ?? 0.0;
+            $data['first_movement_date'] = now()->toDateString();
+
+            // ROP, SS, dan MAX TIDAK boleh diisi dari form ini
+            unset($data['rop'], $data['safety_stock'], $data['max_stock'], $data['proposed_rop'], $data['effective_rop']);
+
+            return Item::create($data);
+        });
 
         return redirect()->route('items.show', $item)
-            ->with('success', "Barang [{$item->code}] {$item->name} berhasil ditambahkan.");
+            ->with('success', "Master SKU [{$item->sku}] {$item->name} berhasil ditambahkan. Parameter inventaris akan dihitung pada kalkulasi pipeline berikutnya.");
     }
 
-    public function show(Item $item)
+    /**
+     * Tampilkan detail SKU lengkap dengan 5 tab interaktif.
+     */
+    public function show(Request $request, Item $item)
     {
-        $item->load(['category', 'supplier', 'overrideUser', 'monthlyUsages' => function ($q) {
-            $q->orderBy('year')->orderBy('month');
-        }]);
+        $item->load([
+            'category',
+            'warehouse',
+            'activeParameter.forecastRun',
+            'classification',
+        ]);
 
-        $effectiveParams = $this->paramService->getEffectiveParameters($item->id);
+        // 1. Data Tab Permintaan (Histori Demand 90 hari terakhir)
+        $dailyDemands = DailyDemand::where('item_id', $item->id)
+            ->orderBy('date', 'asc')
+            ->limit(90)
+            ->get();
 
-        $recentTransactions = $item->transactions()
-            ->with('user')
-            ->orderByDesc('transaction_date')
-            ->limit(10)->get();
+        // 2. Data Tab Parameter (Riwayat Inventory Parameters)
+        $parametersHistory = InventoryParameter::where('item_id', $item->id)
+            ->orderByDesc('computed_at')
+            ->limit(30)
+            ->get();
 
-        return view('items.show', compact('item', 'recentTransactions', 'effectiveParams'));
+        // 3. Data Tab Model (Riwayat Forecast Runs)
+        $forecastRuns = ForecastRun::where('item_id', $item->id)
+            ->orderByDesc('run_at')
+            ->limit(20)
+            ->get();
+
+        // 4. Data Tab Stok & Pergerakan (Riwayat Stock Movements dengan Filter)
+        $movementsQuery = StockMovement::where('item_id', $item->id)
+            ->with('user');
+
+        if ($reason = $request->get('movement_reason')) {
+            $movementsQuery->where('reason', $reason);
+        }
+
+        if ($startDate = $request->get('start_date')) {
+            $movementsQuery->whereDate('movement_date', '>=', $startDate);
+        }
+
+        if ($endDate = $request->get('end_date')) {
+            $movementsQuery->whereDate('movement_date', '<=', $endDate);
+        }
+
+        $stockMovements = $movementsQuery->orderByDesc('movement_date')
+            ->orderByDesc('id')
+            ->paginate(15)
+            ->withQueryString();
+
+        // Hitung inventory position terkini
+        $outstandingPrQty = (float) $item->purchaseRequisitions()
+            ->whereIn('status', ['OPEN', 'ORDERED'])
+            ->sum('q_final');
+        $inventoryPosition = (float) $item->stock_on_hand + $outstandingPrQty;
+
+        // Baseline ROP dan Pita Deviasi Clamping (±50%)
+        $activeParam = $item->activeParameter;
+        $baselineRop = $activeParam ? (float) ($activeParam->effective_rop) : 0;
+        $clampLower = max(0, $baselineRop * 0.5);
+        $clampUpper = $baselineRop * 1.5;
+
+        return view('items.show', compact(
+            'item',
+            'dailyDemands',
+            'parametersHistory',
+            'forecastRuns',
+            'stockMovements',
+            'inventoryPosition',
+            'outstandingPrQty',
+            'baselineRop',
+            'clampLower',
+            'clampUpper'
+        ));
     }
 
+    /**
+     * Tampilkan formulir edit Master SKU (Khusus Admin).
+     */
     public function edit(Item $item)
     {
+        $this->authorize('manage-sku');
+
         $categories = Category::orderBy('name')->get();
-        $suppliers  = Supplier::orderBy('name')->get();
-        return view('items.edit', compact('item', 'categories', 'suppliers'));
+        $warehouses = Warehouse::orderBy('name')->get();
+
+        return view('items.edit', compact('item', 'categories', 'warehouses'));
     }
 
+    /**
+     * Simpan pembaruan Master SKU (Khusus Admin).
+     */
     public function update(Request $request, Item $item)
     {
-        $validated = $request->validate([
-            'category_id'     => ['required', 'exists:categories,id'],
-            'supplier_id'     => ['nullable', 'exists:suppliers,id'],
-            'code'            => ['required', 'string', 'max:50', "unique:items,code,{$item->id}"],
-            'name'            => ['required', 'string', 'max:200'],
-            'unit'            => ['required', 'string', 'max:30'],
-            'description'     => ['nullable', 'string'],
-            'lead_time_days'  => ['required', 'integer', 'min:1', 'max:365'],
-            'coverage_period' => ['required', 'integer', 'min:1', 'max:365'],
+        $this->authorize('manage-sku');
+
+        $validator = Validator::make($request->all(), [
+            'sku'                => ['required', 'string', 'max:50', Rule::unique('items', 'sku')->ignore($item->id)],
+            'name'               => ['required', 'string', 'max:200'],
+            'category_id'        => ['required', 'exists:categories,id'],
+            'warehouse_id'       => ['required', 'exists:warehouses,id'],
+            'unit'               => ['required', 'string', 'max:30'],
+            'description'        => ['nullable', 'string', 'max:1000'],
+            'unit_cost'          => ['required', 'numeric', 'min:0'],
+            'volume_m3'          => ['required', 'numeric', 'gt:0'],
+            'moq'                => ['required', 'numeric', 'gt:0'],
+            'lot_size'           => ['required', 'numeric', 'gt:0'],
+            'lead_time_days'     => ['required', 'integer', 'min:1', 'max:365'],
+            'lead_time_std_days' => ['nullable', 'numeric', 'min:0', 'max:90'],
+            'is_active'          => ['nullable', 'boolean'],
+        ], [
+            'sku.required'            => 'Kode SKU wajib diisi.',
+            'sku.unique'              => 'Kode SKU ini sudah digunakan oleh barang lain.',
+            'name.required'           => 'Nama barang wajib diisi.',
+            'category_id.required'    => 'Kategori barang wajib dipilih.',
+            'warehouse_id.required'   => 'Gudang penempatan wajib dipilih.',
+            'unit.required'           => 'Satuan barang wajib diisi.',
+            'unit_cost.min'           => 'Harga pokok satuan (Unit Cost) tidak boleh bernilai negatif.',
+            'volume_m3.gt'            => 'Volume per unit harus lebih besar dari 0 m³.',
+            'moq.gt'                  => 'MOQ (Minimum Order Quantity) harus lebih besar dari 0.',
+            'lot_size.gt'             => 'Lot Size harus lebih besar dari 0.',
+            'lead_time_days.min'      => 'Lead time minimal 1 hari.',
+            'lead_time_days.max'      => 'Lead time maksimal 365 hari.',
         ]);
 
-        $item->update($validated);
+        // Validasi kelipatan Lot Size menggunakan bcmath sesuai spesifikasi
+        $validator->after(function ($validator) use ($request) {
+            $moq = $request->input('moq');
+            $lotSize = $request->input('lot_size');
 
-        // Recalculate after parameter changes
-        $this->ml->recalculate($item->fresh());
+            if (is_numeric($moq) && is_numeric($lotSize) && (float)$lotSize > 0) {
+                $mod = bcmod((string)$moq, (string)$lotSize, 4);
+                if (bccomp($mod, '0', 4) !== 0) {
+                    $validator->errors()->add('moq', "Nilai MOQ ({$moq}) harus merupakan kelipatan bulat dari Lot Size ({$lotSize}).");
+                }
+            }
+        });
+
+        $validated = $validator->validate();
+
+        DB::transaction(function () use ($item, $validated, $request) {
+            $data = $validated;
+            $data['is_active'] = $request->has('is_active') ? $request->boolean('is_active') : $item->is_active;
+            $data['lead_time_std_days'] = $data['lead_time_std_days'] ?? 0.0;
+
+            // ROP, SS, dan MAX TIDAK BOLEH BISA DIUBAH DARI FORM INI
+            unset($data['rop'], $data['safety_stock'], $data['max_stock'], $data['proposed_rop'], $data['effective_rop']);
+
+            $item->update($data);
+        });
 
         return redirect()->route('items.show', $item)
-            ->with('success', "Barang [{$item->code}] berhasil diperbarui.");
+            ->with('success', "Master SKU [{$item->sku}] berhasil diperbarui. Perubahan parameter fisik akan berlaku pada kalkulasi pipeline berikutnya.");
     }
 
+    /**
+     * Nonaktifkan SKU (is_active = false) — Tanpa hapus permanen agar integritas riwayat terjaga.
+     */
     public function destroy(Item $item)
     {
+        $this->authorize('manage-sku');
+
         if ($item->stock_on_hand > 0) {
-            return back()->with('error', 'Tidak bisa menghapus barang yang masih memiliki stok.');
+            return back()->with('error', "SKU [{$item->sku}] tidak dapat dinonaktifkan karena masih memiliki saldo stok fisik (" . format_number_id($item->stock_on_hand) . " {$item->unit}). Lakukan adjustment atau pengeluaran terlebih dahulu.");
         }
 
         $item->update(['is_active' => false]);
 
         return redirect()->route('items.index')
-            ->with('success', "Barang [{$item->code}] {$item->name} berhasil dinonaktifkan.");
-    }
-
-    /**
-     * Force ML recalculation for an item.
-     */
-    public function recalculate(Item $item)
-    {
-        $this->ml->recalculate($item->fresh());
-        return back()->with('success', 'Kalkulasi ML berhasil diperbarui.');
-    }
-
-    /**
-     * Terapkan Manual Override (Human-in-the-Loop)
-     */
-    public function overrideParameters(Request $request, Item $item)
-    {
-        $validated = $request->validate([
-            'manual_rop'          => ['required', 'numeric', 'min:0'],
-            'manual_safety_stock' => ['nullable', 'numeric', 'min:0'],
-            'override_reason'     => ['required', 'string', 'max:255'],
-        ]);
-
-        $this->paramService->applyManualOverride(
-            $item,
-            (float) $validated['manual_rop'],
-            isset($validated['manual_safety_stock']) && $validated['manual_safety_stock'] !== '' ? (float) $validated['manual_safety_stock'] : null,
-            $validated['override_reason'],
-            auth()->id()
-        );
-
-        $freshItem = $item->fresh();
-
-        if ($request->wantsJson() || $request->ajax()) {
-            return response()->json([
-                'success' => true,
-                'message' => "Manual override berhasil diterapkan untuk [{$freshItem->code}].",
-                'item'    => [
-                    'id'                 => $freshItem->id,
-                    'code'               => $freshItem->code,
-                    'name'               => $freshItem->name,
-                    'unit'               => $freshItem->unit,
-                    'rop'                => (float) $freshItem->rop,
-                    'safety_stock'       => (float) $freshItem->safety_stock,
-                    'ml_rop'             => (float) $freshItem->ml_rop,
-                    'ml_safety_stock'    => (float) $freshItem->ml_safety_stock,
-                    'is_manual_override' => (bool) $freshItem->is_manual_override,
-                    'override_reason'    => $freshItem->override_reason,
-                    'stock_status'       => $freshItem->stock_status,
-                    'is_reorder_needed'  => $freshItem->stock_on_hand <= $freshItem->rop,
-                ],
-            ]);
-        }
-
-        return back()->with('success', "Manual override berhasil diterapkan untuk [{$item->code}]. ROP Efektif sekarang: {$validated['manual_rop']} {$item->unit}.");
-    }
-
-    /**
-     * Reset Manual Override ke kalkulasi Machine Learning
-     */
-    public function resetOverride(Request $request, Item $item)
-    {
-        $this->paramService->resetManualOverride($item);
-        $freshItem = $item->fresh();
-
-        if ($request->wantsJson() || $request->ajax()) {
-            return response()->json([
-                'success' => true,
-                'message' => "Manual override dicabut. [{$freshItem->code}] kembali mengikuti prediksi Machine Learning.",
-                'item'    => [
-                    'id'                 => $freshItem->id,
-                    'code'               => $freshItem->code,
-                    'name'               => $freshItem->name,
-                    'unit'               => $freshItem->unit,
-                    'rop'                => (float) $freshItem->rop,
-                    'safety_stock'       => (float) $freshItem->safety_stock,
-                    'ml_rop'             => (float) $freshItem->ml_rop,
-                    'ml_safety_stock'    => (float) $freshItem->ml_safety_stock,
-                    'is_manual_override' => (bool) $freshItem->is_manual_override,
-                    'override_reason'    => null,
-                    'stock_status'       => $freshItem->stock_status,
-                    'is_reorder_needed'  => $freshItem->stock_on_hand <= $freshItem->rop,
-                ],
-            ]);
-        }
-
-        return back()->with('success', "Manual override dicabut. Parameter [{$item->code}] kembali mengikuti prediksi Machine Learning.");
-    }
-
-    /**
-     * Import items from Excel/CSV (Deep Analysis Mode)
-     */
-    public function import(Request $request)
-    {
-        $request->validate([
-            'file' => ['required', 'file', 'mimes:xlsx,xls,csv', 'max:5120'],
-        ]);
-
-        try {
-            // Baca raw data semua sheet
-            $sheets = \Maatwebsite\Excel\Facades\Excel::toArray(new \stdClass, $request->file('file'));
-            
-            $headerIndex = -1;
-            $headerSheet = -1;
-            $headers = [];
-
-            // 1. Cari baris header di SEMUA sheet
-            foreach ($sheets as $sIndex => $rows) {
-                foreach ($rows as $rIndex => $row) {
-                    $isHeader = false;
-                    foreach ($row as $cell) {
-                        $c = strtolower(trim((string)$cell));
-                        if (str_contains($c, 'material') || str_contains($c, 'kode') || str_contains($c, 'code') || str_contains($c, 'item')) {
-                            $isHeader = true;
-                            break;
-                        }
-                    }
-
-                    if ($isHeader) {
-                        $headerSheet = $sIndex;
-                        $headerIndex = $rIndex;
-                        
-                        // Map headers
-                        foreach ($row as $i => $val) {
-                            $slug = Str::slug((string)$val, '_');
-                            if (str_contains($slug, 'material') && str_contains($slug, 'desc')) $slug = 'material_description';
-                            elseif (str_contains($slug, 'material') || str_contains($slug, 'kode') || str_contains($slug, 'code')) $slug = 'material';
-                            
-                            if (str_contains($slug, 'physical_stock') || str_contains($slug, 'on_hand') || str_contains($slug, 'stok')) $slug = 'physical_stock_on_hand';
-                            if (str_contains($slug, 'safety_stock') || str_contains($slug, 'min')) $slug = 'safety_stock_min';
-                            if (str_contains($slug, 'rop') || str_contains($slug, 'reorder')) $slug = 'rop';
-                            if (str_contains($slug, 'max')) $slug = 'max_stock';
-                            
-                            $headers[$i] = $slug;
-                        }
-                        break 2; // Keluar dari kedua loop
-                    }
-                }
-            }
-
-            if ($headerIndex === -1) {
-                $preview = isset($sheets[0][0]) ? implode(' | ', $sheets[0][0]) : 'File Kosong';
-                throw new \Exception("Gagal menemukan baris judul di semua sheet! Pastikan ada kata 'Material' atau 'Kode'. \nBaris 1 Sheet 1: [ " . $preview . " ]");
-            }
-
-            // 2. Proses data
-            $importedCount = 0; $updatedCount = 0; $duplicateCount = 0; $errorCount = 0;
-            $processedCodes = [];
-            
-            $defaultCatId = Category::firstOrCreate(['name' => 'Uncategorized'], ['description' => 'Imported'])->id;
-
-            $dataRows = $sheets[$headerSheet];
-            foreach ($dataRows as $rIndex => $row) {
-                if ($rIndex <= $headerIndex) continue; // Skip header dan di atasnya
-
-                $rowData = [];
-                foreach ($row as $i => $val) {
-                    if (isset($headers[$i]) && $headers[$i] !== '') {
-                        $rowData[$headers[$i]] = $val;
-                    }
-                }
-
-                $code = $rowData['material'] ?? null;
-                if (empty($code)) {
-                    if (!empty(array_filter($rowData))) $errorCount++;
-                    continue;
-                }
-
-                if (in_array($code, $processedCodes)) {
-                    $duplicateCount++;
-                    continue;
-                }
-                $processedCodes[] = $code;
-
-                $item = Item::firstOrNew(['code' => $code]);
-                $isNew = !$item->exists;
-
-                $item->category_id    = $defaultCatId;
-                $item->name           = $rowData['material_description'] ?? ($item->name ?: 'Unknown Item');
-                $item->unit           = $rowData['base_unit'] ?? ($item->unit ?: 'pcs');
-
-                $item->stock_on_hand  = max(0, floatval($rowData['physical_stock_on_hand'] ?? 0));
-                $item->stock_on_order = isset($rowData['on_order_po_running']) ? max(0, floatval($rowData['on_order_po_running'])) : $item->stock_on_order;
-                $item->stock_reserved = isset($rowData['reserved_qty']) ? max(0, floatval($rowData['reserved_qty'])) : $item->stock_reserved;
-                $item->safety_stock   = isset($rowData['safety_stock_min']) ? max(0, floatval($rowData['safety_stock_min'])) : $item->safety_stock;
-                $item->rop            = isset($rowData['rop']) ? max(0, floatval($rowData['rop'])) : $item->rop;
-                $item->max_stock      = isset($rowData['max_stock']) ? max(0, floatval($rowData['max_stock'])) : $item->max_stock;
-
-                if ($isNew) {
-                    $item->lead_time_days = 7;
-                    $item->coverage_period = 30;
-                    $importedCount++;
-                } else {
-                    $updatedCount++;
-                }
-                $item->save();
-            }
-
-            $msg = "Import Selesai! ";
-            if ($importedCount > 0) $msg .= "{$importedCount} baru. ";
-            if ($updatedCount > 0)  $msg .= "{$updatedCount} diupdate. ";
-            if ($duplicateCount > 0)$msg .= "{$duplicateCount} ganda (skip). ";
-            if ($errorCount > 0)    $msg .= "{$errorCount} error (skip).";
-
-            return back()->with('success', trim($msg));
-        } catch (\Exception $e) {
-            return back()->with('error', 'Gagal mengimpor file: ' . $e->getMessage());
-        }
+            ->with('success', "Master SKU [{$item->sku}] {$item->name} berhasil dinonaktifkan.");
     }
 }

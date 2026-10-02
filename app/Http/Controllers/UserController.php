@@ -39,7 +39,7 @@ class UserController extends Controller
             'name'     => ['required', 'string', 'max:100'],
             'email'    => ['required', 'email', 'unique:users,email'],
             'password' => ['required', 'confirmed', Password::min(8)],
-            'role'     => ['required', 'in:it,procurement,gudang'],
+            'role'     => ['required', 'in:admin,approver,staff'],
         ]);
 
         User::create([
@@ -63,7 +63,7 @@ class UserController extends Controller
         $rules = [
             'name'      => ['required', 'string', 'max:100'],
             'email'     => ['required', 'email', "unique:users,email,{$user->id}"],
-            'role'      => ['required', 'in:it,procurement,gudang'],
+            'role'      => ['required', 'in:admin,approver,staff'],
             'is_active' => ['boolean'],
         ];
 

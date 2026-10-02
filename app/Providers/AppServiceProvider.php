@@ -11,7 +11,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        if (file_exists(app_path('Helpers/format.php'))) {
+            require_once app_path('Helpers/format.php');
+        }
     }
 
     /**
@@ -19,6 +21,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        \Illuminate\Support\Facades\View::composer(
+            'layouts.app',
+            \App\Http\ViewComposers\NavigationComposer::class
+        );
     }
 }

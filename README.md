@@ -1,4 +1,23 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# PRISM Stock (Predictive Reorder & Inventory Safety Management)
+
+Sistem Manajemen Persediaan Terpadu Berbasis Machine Learning dengan Safety Stock (SS), Reorder Point (ROP), Maximum Stock (MAX), Guardrail Clamping, dan Capacity Checking.
+
+---
+
+### ⚠️ Kebijakan Keamanan Akun Demo (Non-Produksi)
+> **PERHATIAN**: Akun demo (`admin@prism.local`, `approver@prism.local`, `staff@prism.local`) dibuat melalui seeder **HANYA** untuk lingkungan pengembangan non-produksi (`local` dan `testing`).
+> 
+> - **DILARANG** menggunakan seeder akun demo di lingkungan produksi (`production`).
+> - Akun demo **WAJIB DIGANTI atau DIHAPUS** sebelum proses deployment ke server staging/production.
+> - Pembuatan akun Administrator awal untuk lingkungan produksi **WAJIB** dilakukan melalui perintah artisan resmi:
+>   ```bash
+>   php artisan prism:create-admin
+>   ```
+>   Perintah ini akan meminta Nama, Alamat Email, dan Password terkonfirmasi secara interaktif dan aman.
+
+---
+
+## Tentang Sistem
 
 <p align="center">
 <a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>

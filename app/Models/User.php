@@ -25,17 +25,22 @@ class User extends Authenticatable
         'is_active'         => 'boolean',
     ];
 
-    // ── Role checks ─────────────────────────────────────────────────────────
-    public function isIT(): bool         { return $this->role === 'it'; }
-    public function isProcurement(): bool { return $this->role === 'procurement'; }
-    public function isGudang(): bool      { return $this->role === 'gudang'; }
+    // ── Role checks (PRISM Stock RBAC) ──────────────────────────────────────
+    public function isAdmin(): bool       { return $this->role === 'admin'; }
+    public function isApprover(): bool    { return $this->role === 'approver'; }
+    public function isStaff(): bool       { return $this->role === 'staff'; }
+
+    // Backward-compat aliases
+    public function isIT(): bool          { return $this->isAdmin(); }
+    public function isProcurement(): bool { return $this->isApprover(); }
+    public function isGudang(): bool      { return $this->isStaff(); }
 
     public function getRoleLabelAttribute(): string
     {
         return match($this->role) {
-            'it'          => 'IT Admin',
-            'procurement' => 'Procurement',
-            'gudang'      => 'Gudang',
+            'admin'       => 'Administrator',
+            'approver'    => 'Approver',
+            'staff'       => 'Staff Gudang',
             default       => ucfirst($this->role),
         };
     }
@@ -45,13 +50,27 @@ class User extends Authenticatable
     public function scopeByRole($query, string $role) { return $query->where('role', $role); }
 
     // ── Relations ───────────────────────────────────────────────────────────
+
+    /** Gerakan stok yang dicatat oleh user ini */
+    public function movements()
+    {
+        return $this->hasMany(StockMovement::class);
+    }
+
+    /** @deprecated Gunakan movements() */
     public function transactions()
     {
-        return $this->hasMany(StockTransaction::class);
+        return $this->movements();
     }
 
     public function purchaseOrders()
     {
         return $this->hasMany(PurchaseOrder::class);
+    }
+
+    /** Parameter inventory yang di-review oleh user ini (role: procurement) */
+    public function reviewedParameters()
+    {
+        return $this->hasMany(InventoryParameter::class, 'reviewed_by');
     }
 }

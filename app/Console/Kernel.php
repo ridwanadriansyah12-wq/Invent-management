@@ -12,7 +12,13 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // Hitung ulang ML (SS, ROP, Max) setiap hari jam 00:00
+        // Pipeline Persediaan Harian (Forecast -> Guardrail -> Capacity -> PR Trigger) jam 01:00
+        $schedule->command('inventory:pipeline-daily')->dailyAt('01:00');
+
+        // Klasifikasi Mingguan ABC-XYZ & ADI/CV² setiap Minggu malam jam 23:00
+        $schedule->command('inventory:classify-weekly')->weeklyOn(0, '23:00');
+
+        // Hitung ulang ML lama (SS, ROP, Max) setiap hari jam 00:00 (backward-compat)
         $schedule->command('inventory:recalculate')->dailyAt('00:00');
 
         // Pemeriksaan berkala ROP dan pemicu email alert setiap jam

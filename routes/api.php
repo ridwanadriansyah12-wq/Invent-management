@@ -17,3 +17,10 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();
 });
+
+// Human-in-the-loop review routes for Inventory Parameters
+Route::prefix('v1/inventory/parameters')->group(function () {
+    Route::get('/pending', [\App\Http\Controllers\Api\InventoryParameterReviewController::class, 'pendingReviews']);
+    Route::post('/{id}/approve', [\App\Http\Controllers\Api\InventoryParameterReviewController::class, 'approve']);
+    Route::post('/{id}/reject', [\App\Http\Controllers\Api\InventoryParameterReviewController::class, 'reject']);
+});

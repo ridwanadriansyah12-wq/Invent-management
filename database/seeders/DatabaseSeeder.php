@@ -16,36 +16,38 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // ── Users ──────────────────────────────────────────────────────────
-        User::insert([
-            [
-                'name'       => 'IT Administrator',
-                'email'      => 'admin@rop.com',
-                'password'   => Hash::make('password'),
-                'role'       => 'it',
-                'is_active'  => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ],
-            [
-                'name'       => 'Staff Procurement',
-                'email'      => 'procurement@rop.com',
-                'password'   => Hash::make('password'),
-                'role'       => 'procurement',
-                'is_active'  => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ],
-            [
-                'name'       => 'Staff Gudang',
-                'email'      => 'gudang@rop.com',
-                'password'   => Hash::make('password'),
-                'role'       => 'gudang',
-                'is_active'  => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ],
-        ]);
+        // ── Akun Demo (Hanya untuk Lingkungan Non-Produksi) ─────────────────
+        if (app()->environment(['local', 'testing'])) {
+            User::firstOrCreate(
+                ['email' => 'admin@prism.local'],
+                [
+                    'name'       => 'Administrator Demo',
+                    'password'   => Hash::make('password123'),
+                    'role'       => 'admin',
+                    'is_active'  => true,
+                ]
+            );
+
+            User::firstOrCreate(
+                ['email' => 'approver@prism.local'],
+                [
+                    'name'       => 'Procurement Approver Demo',
+                    'password'   => Hash::make('password123'),
+                    'role'       => 'approver',
+                    'is_active'  => true,
+                ]
+            );
+
+            User::firstOrCreate(
+                ['email' => 'staff@prism.local'],
+                [
+                    'name'       => 'Staff Gudang Demo',
+                    'password'   => Hash::make('password123'),
+                    'role'       => 'staff',
+                    'is_active'  => true,
+                ]
+            );
+        }
 
         // ── Categories ─────────────────────────────────────────────────────
         $catOffice   = Category::create(['name' => 'Alat Tulis Kantor', 'description' => 'Perlengkapan administrasi']);

@@ -1,0 +1,25 @@
+<?php
+
+return [
+    'ACTIVE'                   => 'Aktif',
+    'APPROVED'                 => 'Disetujui',
+    'PENDING_REVIEW'           => 'Perlu Review',
+    'REJECTED'                 => 'Ditolak',
+    'SUPERSEDED'               => 'Tergantikan',
+    'STATIC_CATEGORY'          => 'Statis Kategori',
+    'FALLBACK_LAST_APPROVED'   => 'Fallback Terakhir',
+    'WAREHOUSE_OVER_CAPACITY'  => 'Kelebihan Kapasitas',
+    'OPEN'                     => 'Terbuka',
+    'ORDERED'                  => 'Dipesan',
+    'RECEIVED'                 => 'Diterima',
+    'CANCELLED'                => 'Dibatalkan',
+    'COMPLETED'                => 'Selesai',
+    'RUNNING'                  => 'Sedang Berjalan',
+    'FAILED'                   => 'Gagal',
+    'IN'                       => 'Masuk',
+    'OUT'                      => 'Keluar',
+    'ADJUSTMENT'               => 'Penyesuaian',
+    'ADMIN'                    => 'Administrator',
+    'APPROVER'                 => 'Approver (Procurement)',
+    'STAFF'                    => 'Staff (Gudang)',
+];
